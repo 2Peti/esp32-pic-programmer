@@ -14,8 +14,7 @@ def chunk_data(data_dict, chunk_size):
     """
     Groups individual words into chunks of exactly chunk_size.
     Pads with 0x3FFF (typical empty PIC flash value).
-    The final bytes are serialized in Big Endian order for serial transmission.
-    Returns a dict: {start_address: bytes_data}
+    Returns a dict: {start_address: bytes_data (Big Endian for Serial)}
     """
     chunks = {}
     for addr in sorted(data_dict.keys()):
@@ -73,9 +72,7 @@ def load_hex(path: str, hex_byte_order: str = 'little') -> Dict[int, int]:
                 
                 for i in range(0, data_len, WORD_SIZE):
                     address = high_address_offset + current_low_address
-                    
                     word = int.from_bytes(data_bytes[i : i + WORD_SIZE], hex_byte_order)
-                    
                     words[address] = word
                     current_low_address += 1
 
@@ -88,6 +85,66 @@ def load_hex(path: str, hex_byte_order: str = 'little') -> Dict[int, int]:
         print(f"An error occurred during decoding: {e}")
         return {}
 
+def save_hex(path: str, data_dict: Dict[int, int]):
+    """
+    Saves a memory dictionary {word_address: int_value} to an Intel HEX file.
+    Converts 16-bit word addresses to byte addresses and handles Extended Linear Address records.
+    """
+    try:
+        with open(path, 'w') as f:
+            sorted_addrs = sorted(data_dict.keys())
+            if not sorted_addrs:
+                return
+
+            current_high_addr = 0
+            
+            line_data = bytearray()
+            line_start_addr = -1
+            
+            def write_record(address, record_type, data):
+                count = len(data)
+                checksum = count + (address >> 8) + (address & 0xFF) + record_type + sum(data)
+                checksum = (~checksum + 1) & 0xFF
+                hex_str = f":{count:02X}{address:04X}{record_type:02X}{data.hex().upper()}{checksum:02X}\n"
+                f.write(hex_str)
+
+            for i, word_addr in enumerate(sorted_addrs):
+                byte_addr = word_addr * 2
+                
+                high_addr = byte_addr >> 16
+                low_addr = byte_addr & 0xFFFF
+                
+                if high_addr != current_high_addr:
+                    if line_data:
+                        write_record(line_start_addr, 0x00, line_data)
+                        line_data = bytearray()
+                    
+                    high_bytes = high_addr.to_bytes(2, 'big')
+                    write_record(0x0000, 0x04, high_bytes)
+                    current_high_addr = high_addr
+
+                if (line_start_addr == -1) or \
+                   (low_addr != line_start_addr + len(line_data)) or \
+                   (len(line_data) >= 16):
+                    
+                    if line_data:
+                        write_record(line_start_addr, 0x00, line_data)
+                    
+                    line_start_addr = low_addr
+                    line_data = bytearray()
+
+                word_val = data_dict[word_addr]
+                line_data.extend(word_val.to_bytes(2, 'little'))
+
+            if line_data:
+                write_record(line_start_addr, 0x00, line_data)
+
+            write_record(0x0000, 0x01, b'')
+            
+        print(f"Saved {len(data_dict)} words to {path}")
+
+    except Exception as e:
+        print(f"Error saving hex file: {e}")
 
 class ArduinoProgrammer:
     def __init__(self, port, baud=115200, dry_run=False):
@@ -145,124 +202,101 @@ class ArduinoProgrammer:
         self.ser.write(int_to_bytes(word_count))
         resp = self.ser.read(word_count * 2)
         return resp if len(resp) == word_count * 2 else None
-
-
-def verify_chunks(prog, chunks, memory_type):
-    """Verifies a set of memory chunks against the device."""
-    verify_error = False
-    print(f"Verifying {len(chunks)} {memory_type} blocks...")
     
-    for addr, expected_data in sorted(chunks.items()):
-        word_count = len(expected_data) // 2
-        print(f"Verifying 0x{addr:04X} ({memory_type})...", end=' ')
-        
-        actual_data = prog.read_block(addr, word_count)
-        
-        if actual_data is None:
-            print("READ FAIL (No response)")
-            verify_error = True
-            break
-        
-        if actual_data != expected_data:
-            print(f"FAIL: Expected {expected_data.hex()}, got {actual_data.hex()}")
-            verify_error = True
-            for i in range(min(len(expected_data), len(actual_data))):
-                if expected_data[i] != actual_data[i]:
-                    print(f"  Mismatch at byte {i}: Expected 0x{expected_data[i]:02X}, Got 0x{actual_data[i]:02X}")
-                    break
-            break
-        
-        print("OK")
+    def erase_row(self, addr):
+        if self.dry_run:
+            return True
+        self.ser.write(b'e') 
+        self.ser.write(int_to_bytes(addr))
+        resp = self.ser.read()
+        return resp == b'K'
     
-    return not verify_error
+    def bulk_erase(self, addr):
+        if self.dry_run:
+            return True
+        self.ser.write(b'b') 
+        self.ser.write(int_to_bytes(addr))
+        resp = self.ser.read()
+        return resp == b'K'
+
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Arduino-based PIC Programmer Client")
     parser.add_argument('hexfile', nargs='?', help='Input Intel HEX file for flashing or verifying.')
-    parser.add_argument('-d', '--device', required=True, help='Path to pic_devices.ini.')
+    parser.add_argument('-d', '--device', required=False, help='Path to pic_devices.ini (Required for Flash, Verify, and Full Dump).')
     parser.add_argument('-p', '--port', required=True, help='Serial Port.')
     parser.add_argument('--dry-run', action='store_true', help='Simulate without hardware.')
     parser.add_argument('-c', '--config', action='store_true', help='Also include config words (applies to -f and -v).')
-
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument('-f', '--flash', action='store_true', help='Write hexfile to device flash memory.')
-    group.add_argument('-v', '--verify', action='store_true', help='Verify hexfile against device memory.')
-    group.add_argument('-w', '--write-word', nargs=2, metavar=('ADDR', 'HEXWORD'), help='Write a single 16-bit word to an address (e.g., -w 0x0010 0x8131).')
-    group.add_argument('-r', '--read-word', nargs=1, metavar=('ADDR'), help='Read a single 16-bit word from an address (e.g., -r 0x0010).')
-    group.add_argument('--dump', nargs=2, metavar=('ADDR', 'LEN'), help='Read a block of memory and display it (e.g., --dump 0x0000 128).')
+    parser.add_argument('-f', '--flash', action='store_true', help='Write hexfile to device flash memory.')
+    parser.add_argument('-v', '--verify', action='store_true', help='Verify hexfile against device memory.')
+    parser.add_argument('--wipe', action='store_true', help='Erase ENTIRE Flash memory.')
+    parser.add_argument('-w', '--write', nargs=2, metavar=('ADDR', 'HEX_DATA'), help='Write a block of bytes (e.g., -w 0x0010 8131FFEE).')
+    parser.add_argument('-e', '--erase-row', nargs=1, metavar=('ADDR'), help='Erase a single row of flash memory (e.g., -e 0x0400).')
+    parser.add_argument('-r', '--read', nargs=2, metavar=('ADDR', 'LEN'), help='Read a block of memory and display it (e.g., -r 0x0000 128).')
+    parser.add_argument('--dump', nargs=1, metavar=('FILENAME'), help='Dump entire Flash and Config to a .HEX file (Requires -d).')
     
     args = parser.parse_args()
 
     cfg = configparser.ConfigParser(strict=False)
-    if not os.path.exists(args.device):
-        print(f"Error: Config file not found at {args.device}")
-        sys.exit(1)
+    mcu_id = "Unknown"
+    flash_write_size = 32
+    rom_size = 0
+    config_mem_start = 0
+    config_mem_end = 0
+    device_loaded = False
+
+    if args.device:
+        if not os.path.exists(args.device):
+            print(f"Error: Config file not found at {args.device}")
+            sys.exit(1)
+            
+        cfg.read(args.device)
+        available_devices = cfg.sections()
         
-    cfg.read(args.device)
-    available_devices = cfg.sections()
+        if len(available_devices) == 0:
+            print(f"Error: No device sections found in {args.device}.")
+            sys.exit(1)
+        elif len(available_devices) == 1:
+            mcu_id = available_devices[0]
+            print(f"Auto-detecting device: {mcu_id}")
+        else:
+            print(f"Error: Multiple devices found in {args.device}.")
+            sys.exit(1)
+
+        device_cfg = cfg[mcu_id]
+        flash_write_size = int(device_cfg.get('FLASH_WRITE', '20'), 16)
+        rom_size = int(device_cfg.get('ROMSIZE', '0'), 16)
+        config_range_str = device_cfg.get('CONFIG')
+        if config_range_str:
+            try:
+                start, end = [int(x.strip(), 16) for x in config_range_str.split('-')]
+                config_mem_start = start
+                config_mem_end = end
+            except ValueError:
+                pass
+        device_loaded = True
+
+        print(f"Device: {mcu_id} | Row Size: {flash_write_size} words | Config Range: 0x{config_mem_start:X}-0x{config_mem_end:X}")
     
-    if len(available_devices) == 0:
-        print(f"Error: No device sections found in {args.device}.")
-        sys.exit(1)
-    elif len(available_devices) == 1:
-        mcu_id = available_devices[0]
-        print(f"Auto-detecting device: {mcu_id}")
-    else:
-        print(f"Error: Multiple devices found in {args.device}. Please ensure the config only contains one device section.")
-        print(f"Available devices: {', '.join(available_devices)}")
+    if (args.flash or args.verify or args.dump) and not device_loaded:
+        print("Error: The --device (-d) argument is REQUIRED for Flash, Verify, and Full Dump operations.")
         sys.exit(1)
 
-    device_cfg = cfg[mcu_id]
-    flash_write_size = int(device_cfg.get('FLASH_WRITE', '20'), 16)
-    
-    config_mem_start = 0xFFFF
-    config_mem_end = 0xFFFF
-    rom_size = int(device_cfg.get('ROMSIZE', '0'), 16)
-
-    config_range_str = device_cfg.get('CONFIG')
-    if config_range_str:
-        try:
-            start, end = [int(x.strip(), 16) for x in config_range_str.split('-')]
-            config_mem_start = start
-            config_mem_end = end
-        except ValueError:
-            print("Warning: Invalid 'CONFIG' range format in INI file.")
-
-    print(f"Device: {mcu_id} | Row Size: {flash_write_size} words | Config Range: 0x{config_mem_start:X}-0x{config_mem_end:X} | Dry Run: {args.dry_run}")
+    print(f"Dry Run: {args.dry_run}")
 
     prog = ArduinoProgrammer(args.port, dry_run=args.dry_run)
     if not prog.connect():
         sys.exit(1)
 
     try:
-        def verify_chunks(prog, chunks, memory_type):
-            """Verifies a set of memory chunks against the device."""
-            verify_error = False
-            print(f"Verifying {len(chunks)} {memory_type} blocks...")
-            
-            for addr, expected_data in sorted(chunks.items()):
-                word_count = len(expected_data) // 2
-                print(f"Verifying 0x{addr:04X} ({memory_type})...", end=' ')
-                
-                actual_data = prog.read_block(addr, word_count)
-                
-                if actual_data is None:
-                    print("READ FAIL (No response)")
-                    verify_error = True
-                    break
-                
-                if actual_data != expected_data:
-                    print(f"FAIL: Expected {expected_data.hex()}, got {actual_data.hex()}")
-                    verify_error = True
-                    break
-                
-                print("OK")
-            
-            return not verify_error
-
+        if args.wipe:
+            print(f"WIPING Device Flash Memory...", end=' ')
+            if not prog.bulk_erase(int("0x80FF", 16)):
+                print(" FAIL")
+            print("OK.")
+        
         if args.flash and args.hexfile:
             raw_data = load_hex(args.hexfile)
-            
             flash_data = {}
             config_data = {}
             for addr, word in raw_data.items():
@@ -277,12 +311,10 @@ def main():
             flash_error = False
             for addr, data in sorted(flash_chunks.items()):
                 print(f"Writing 0x{addr:04X}...", end=' ')
-                
                 if not prog.write_block(addr, data):
                     print("WRITE FAIL")
                     flash_error = True
                     break
-                
                 if args.dry_run:
                     print("OK (Simulated)")
                 else:
@@ -304,7 +336,6 @@ def main():
                 config_ok = True
                 for addr, data in sorted(config_write_chunks.items()):
                     print(f"Writing Config 0x{addr:04X}...", end=' ')
-
                     if not prog.write_block(addr, data):
                         print("CONFIG WRITE FAIL")
                         config_ok = False
@@ -324,10 +355,29 @@ def main():
                     print("FLASH & VERIFY COMPLETE: SUCCESS")
                 else:
                     print("FLASH & VERIFY COMPLETE: FAILED")
-                
-        elif args.verify and args.hexfile:
+            elif not flash_error:
+                print("FLASH COMPLETE: SUCCESS")
+
+        if args.verify and args.hexfile:
+            def verify_chunks(prog, chunks, memory_type):
+                verify_error = False
+                print(f"Verifying {len(chunks)} {memory_type} blocks...")
+                for addr, expected_data in sorted(chunks.items()):
+                    word_count = len(expected_data) // 2
+                    print(f"Verifying 0x{addr:04X} ({memory_type})...", end=' ')
+                    actual_data = prog.read_block(addr, word_count)
+                    if actual_data is None:
+                        print("READ FAIL")
+                        verify_error = True
+                        break
+                    if actual_data != expected_data:
+                        print(f"FAIL: Expected {expected_data.hex()}, got {actual_data.hex()}")
+                        verify_error = True
+                        break
+                    print("OK")
+                return not verify_error
+
             raw_data = load_hex(args.hexfile)
-            
             flash_data = {}
             config_data = {}
             for addr, word in raw_data.items():
@@ -344,7 +394,6 @@ def main():
                 config_chunks = {}
                 for addr, word in sorted(config_data.items()):
                     config_chunks[addr] = word.to_bytes(2, 'big')
-                
                 config_ok = verify_chunks(prog, config_chunks, "Configuration")
                 
             if flash_ok and config_ok:
@@ -352,51 +401,110 @@ def main():
             else:
                 print("VERIFY COMPLETE: FAILED")
 
-        elif args.dump:
-            addr, length = int(args.dump[0], 16), int(args.dump[1])
-            data = prog.read_block(addr, length)
-            
-            if data is None:
-                print("Dump Read Failed (No response)")
+        if args.erase_row:
+            addr = int(args.erase_row[0], 16)
+            print(f"Erasing row at 0x{addr:04X}...", end=' ')
+            if prog.erase_row(addr):
+                print("Success")
             else:
-                print(f"--- DUMP: 0x{addr:04X} to 0x{addr + length - 1:04X} ({length} words) ---")
-                current_addr = addr
-                for i in range(0, len(data), 16):
-                    line_data = data[i:i+16]
-                    
-                    hex_string = ' '.join([f'{w:04X}' for w in [
-                        int.from_bytes(line_data[j:j+2], 'big') for j in range(0, len(line_data), 2)
-                    ]])
-                    
-                    print(f"0x{current_addr:04X}: {hex_string}")
-                    current_addr += len(line_data) // 2
+                print("Erase Failed")
 
-
-        elif args.read_word:
-            addr = int(args.read_word[0], 16)
-            data = prog.read_block(addr, 1)
+        if args.write:
+            addr = int(args.write[0], 16)
+            hex_data_str = args.write[1]
             
-            if data is None:
-                print(f"Read 0x{addr:04X} Failed")
-            else:
-                word_val = int.from_bytes(data, 'big')
-                print(f"Read 0x{addr:04X}: 0x{word_val:04X}")
-
-        elif args.write_word:
-            addr = int(args.write_word[0], 16)
-            word_val = int(args.write_word[1], 16)
-            data = word_val.to_bytes(2, 'big')
+            try:
+                data = bytes.fromhex(hex_data_str)
+            except ValueError:
+                print(f"Error: Invalid hex data string provided: {hex_data_str}")
+                sys.exit(1)
             
-            print(f"Writing {data.hex()} to 0x{addr:04X}...", end=' ')
+            if len(data) % 2 != 0:
+                print("Error: HEX_DATA must represent an even number of bytes (16-bit words).")
+                sys.exit(1)
+            
+            print(f"Writing {data.hex()} ({len(data)//2} words) to 0x{addr:04X}...", end=' ')
             if prog.write_block(addr, data):
                 if args.dry_run:
                     print("Success (Simulated)")
                 else:
                     print("Success")
-                    v = prog.read_block(addr, 1)
+                    v = prog.read_block(addr, len(data) // 2)
                     print("Verify Match" if v == data else f"Verify Mismatch: {v.hex()}")
             else:
                 print("Write Failed")
+                
+        if args.read:
+            addr, length = int(args.read[0], 16), int(args.read[1])
+            print(f"Reading {length} words from 0x{addr:04X}...")
+            
+            CHUNK_SIZE = 64
+            current_addr = addr
+            remaining = length
+            
+            while remaining > 0:
+                fetch_len = min(remaining, CHUNK_SIZE)
+                data = prog.read_block(current_addr, fetch_len)
+                
+                if data is None:
+                    print(f"Read Failed at 0x{current_addr:04X}")
+                    break
+                
+                for i in range(0, len(data), 16):
+                    line_data = data[i:i+16]
+                    hex_string = ' '.join([f'{w:04X}' for w in [
+                        int.from_bytes(line_data[j:j+2], 'big') for j in range(0, len(line_data), 2)
+                    ]])
+                    print(f"0x{current_addr:04X}: {hex_string}")
+                    current_addr += len(line_data) // 2
+                
+                remaining -= fetch_len
+                
+        if args.dump:
+            filename = args.dump[0]
+            print(f"Dumping Flash (0x0000 - 0x{rom_size:04X}) and Config to {filename}...")
+            
+            dump_data = {}
+            
+            read_chunk = 64
+            for addr in range(0, rom_size, read_chunk):
+                count = min(read_chunk, rom_size - addr)
+                print(f"\rReading Flash 0x{addr:04X}...", end='')
+                
+                block_bytes = prog.read_block(addr, count)
+                if block_bytes:
+                    for i in range(0, len(block_bytes), 2):
+                        word_val = int.from_bytes(block_bytes[i:i+2], 'big')
+                        dump_data[addr + (i//2)] = word_val
+                else:
+                    print(f" Error reading 0x{addr:04X}")
+
+            print("\nReading Config...", end=' ')
+            if config_mem_start > 0 and config_mem_end >= config_mem_start:
+                cfg_len = (config_mem_end - config_mem_start) + 1
+                cfg_bytes = prog.read_block(config_mem_start, cfg_len)
+                if cfg_bytes:
+                    for i in range(0, len(cfg_bytes), 2):
+                        word_val = int.from_bytes(cfg_bytes[i:i+2], 'big')
+                        dump_data[config_mem_start + (i//2)] = word_val
+                    print("Done.")
+                else:
+                    print("Failed.")
+            else:
+                print("Skipped.")
+
+            print("Filtering empty memory (0x3FFF)...")
+            filtered_dump = {}
+            for addr, val in dump_data.items():
+                is_config = (config_mem_start <= addr <= config_mem_end)
+                if val != 0x3FFF or is_config:
+                    filtered_dump[addr] = val
+            
+            print(f"Saving to {filename}...")
+            save_hex(filename, filtered_dump)
+            print(f"Done. (Filtered {len(dump_data) - len(filtered_dump)} empty words)")
+
+
 
     finally:
         prog.disconnect()
