@@ -1,108 +1,148 @@
 PIC Programmer CLI (Arduino-Based)
 ==================================
 
-A command-line utility for flashing, reading, and verifying **PIC microcontroller memory** using an Arduino as the programmer.  
-Supports Intel HEX parsing, chunked flash writing, configuration-word handling, and verification.
+A powerful command-line tool for flashing, verifying, erasing, reading, and dumping **PIC microcontroller memory** using an Arduino as the programmer.
+
+Supports Intel HEX parsing + generation, full-chip wipe, row erase, chunked flash writing, configuration-word handling, and combined multi-action command execution.
 
 * * *
 
 Features
---------
+========
 
-*   Flash program memory from an **Intel HEX** file.
-*   Verify device memory against a HEX file.
-*   Read and write individual words.
-*   Dump blocks of memory for inspection.
-*   Auto-detect device parameters from `pic_devices.ini`.
-*   Optional **dry-run mode** (no hardware required).
-*   Supports PIC configuration memory ranges.
+*   Flash program memory from an Intel HEX file
+*   Verify device memory against HEX file
+*   **Bulk erase** entire flash (`--wipe`)
+*   **Erase individual rows** (`--erase-row`)
+*   Write bytes or words (`--write`)
+*   Read word blocks (`--read`)
+*   Dump entire flash + config to a HEX file (`--dump`)
+*   Generate valid Intel HEX output
+*   Auto-detect device properties from `pic_devices.ini`
+*   Combine multiple actions in one command
+*   Safe dry-run mode (`--dry-run`)
 
 * * *
 
-Requirements
-------------
-
-*   Python 3.8+
-*   `pyserial`
-*   Arduino running compatible PIC programmer firmware
-*   A valid `pic_devices.ini` for your device
-
-Install dependencies:
+Installation
+============
 
 ```bash
 pip install pyserial
+git clone https://github.com/2Peti/esp32-pic-programmer.git
 ```
+
+Requires:
+
+*   Python 3.8+
+*   Arduino running the matching firmware
+*   A device profile (via `pic_devices.ini`)
 
 * * *
 
 Usage
------
+=====
 
-### Basic Syntax
-
-```bash
-python3 main.py <hexfile> -d pic_devices.ini -p <serial_port> [options]
-```
-
-### Required Arguments
-
-| Option | Description |
-| --- | --- |
-| `-d, --device` | Path to PIC device configuration INI file |
-| `-p, --port` | Serial port (Arduino programmer) |
-| One of: | `--flash`, `--verify`, `--read-word`, `--write-word`, `--dump` |
-
-* * *
-
-Common Commands
----------------
-
-#### Flash a HEX file
+Basic Syntax
+------------
 
 ```bash
-python3 main.py -d pic_devices.ini -p /dev/ttyUSB0 --flash firmware.hex
-```
-
-#### Flash + write config words
-
-```bash
-python3 main.py -d pic_devices.ini -p /dev/ttyUSB0 --flash --config firmware.hex
-```
-
-#### Verify device memory against HEX file
-
-```bash
-python3 main.py -d pic_devices.ini -p /dev/ttyUSB0 --verify firmware.hex
-```
-
-#### Read a single word
-
-```bash
-python3 main.py -d pic_devices.ini -p /dev/ttyUSB0 --read-word 0x0010
-```
-
-#### Write a single word
-
-```bash
-python3 main.py -d pic_devices.ini -p /dev/ttyUSB0 --write-word 0x0010 0x1234
-```
-
-#### Dump memory region
-
-```bash
-python3 main.py -d pic_devices.ini -p /dev/ttyUSB0 --dump 0x0000 128
-```
-
-#### Dry-run (no hardware)
-
-```bash
-python3 main.py firmware.hex -d pic_devices.ini -p TEST --flash --dry-run
+python3 main.py <hexfile> -d device.ini -p <serial port> [actions] [options]
 ```
 
 * * *
 
-Device Configuration (`pic_devices.ini`)
-----------------------------------------
+Examples
+========
+
+Most common flashing workflow (wipe + flash + config):
+------------------------------------------------------
+
+```bash
+python3 main.py -d device.ini -p /dev/ttyUSB0 --wipe -f --config firmware.hex
+```
+
+Flash only
+----------
+
+```bash
+python3 main.py -d device.ini -p /dev/ttyUSB0 -f firmware.hex
+```
+
+Verify against HEX file
+-----------------------
+
+```bash
+python3 main.py -d device.ini -p /dev/ttyUSB0 -v firmware.hex
+```
+
+Wipe entire flash:
+------------------
+
+```bash
+python3 main.py -p /dev/ttyUSB0 --wipe
+```
+
+Erase a single row
+------------------
+
+```bash
+python3 main.py -p /dev/ttyUSB0 --erase-row 0x0400
+```
+
+Write raw hex bytes (must be even length)
+-----------------------------------------
+
+```bash
+python3 main.py -p /dev/ttyUSB0 --write 0x0100 AABBCCDD
+```
+
+Read N words starting at an address
+-----------------------------------
+
+```bash
+python3 main.py -p /dev/ttyUSB0 --read 0x0200 128
+```
+
+Dump entire flash + config into a HEX file
+------------------------------------------
+
+```bash
+python3 main.py -d device.ini -p /dev/ttyUSB0 --dump out.hex
+```
+
+* * *
+
+Multi-Action Support
+====================
+
+You can **combine multiple actions** in a single command.  
+The tool executes them _in this order_:
+
+1.  `--wipe` (bulk erase)
+2.  `--erase-row`
+3.  `--flash`
+4.  `--verify`
+5.  `--write`
+6.  `--read`
+7.  `--dump`
+
+### Example: Erase → Flash → Read back block → Dump
+
+```bash
+python3 main.py -d device.ini -p /dev/ttyUSB0 --wipe -f firmware.hex --read 0x0000 64 --dump backup.hex
+```
+
+### Example: Flash but also extract a HEX dump afterwards
+
+```bash
+python3 main.py -d device.ini -p /dev/ttyUSB0 -f firmware.hex --dump saved.hex
+```
+
+* * *
+
+Device Configuration: `pic_devices.ini`
+=======================================
 
 Example:
 
@@ -113,202 +153,196 @@ FLASH_WRITE = 20
 CONFIG = 0x1FFF - 0x2007
 ```
 
-### Fields
+Field descriptions
+------------------
 
-| Key | Description |
+| Field | Description |
 | --- | --- |
-| `ROMSIZE` | Total flash size (words) |
-| `FLASH_WRITE` | Flash write row size (words) |
-| `CONFIG` | Config memory address range |
+| `ROMSIZE` | Maximum word-addressed program memory range |
+| `FLASH_WRITE` | PIC flash row size (words) |
+| `CONFIG` | Address range for configuration words |
+
+Required for:  
+`--flash`, `--verify`, `--dump`.
 
 * * *
 
-Project Structure
------------------
+Intel HEX Loading and Saving
+============================
 
-```
-main.py             # Main CLI
-pic_devices.ini     # Device config (user-provided)
-```
+### Loading (`load_hex()`)
+
+*   Accepts extended linear address records (type 04)
+*   Converts byte addresses → word addresses
+*   PIC words stored little-endian internally
+*   Automatically handles segmented HEX files
+
+### Saving (`save_hex()`)
+
+*   Automatically emits:
+    *   Type 04 records (extended linear addresses)
+    *   Type 00 data records
+    *   Type 01 EOF record
+*   Writes max **16 bytes (8 words)** per line
+*   Filters out unused memory (0x3FFF) during `--dump`
+*   Preserves config words even if blank
 
 * * *
 
 Technical Documentation
------------------------
+=======================
 
-This section describes the **serial protocol**, **message framing**, and **expected device behavior** used between the PC and Arduino firmware.
-
-* * *
-
-🔧 Serial Protocol Specification
-================================
-
-Communication is performed over a simple binary protocol with single-character commands followed by fixed-length fields.
-
-*   **Baud Rate:** 115200
-*   **Byte Order:** Big-endian (for all addresses + words)
-*   **Timeout:** 5 seconds unless otherwise noted
-*   **Handshake:** ASCII characters
+This describes the **serial protocol** used between the PC client and the Arduino firmware.
 
 * * *
 
-1\. Connection Handshake
-------------------------
-
-Upon opening the serial connection:
-
-**Host → Arduino**
-
-```
-0x73   ('s')
-```
-
-**Arduino → Host**
-
-```
-0x4B   ('K')
-```
-
-If the Arduino does not return `'K'`, the connection is considered failed.
-
-* * *
-
-2\. Commands Overview
----------------------
-
-| Command | Direction | Description |
-| --- | --- | --- |
-| `s` | Host → Dev | Connect handshake |
-| `x` | Host → Dev | Disconnect request |
-| `w` | Host → Dev | Write flash/config block |
-| `r` | Host → Dev | Read flash/config block |
-
-* * *
-
-3\. Write Block Command (`w`)
+Serial Protocol Specification
 =============================
 
-### Host → Device Frame
+*   **Baud:** 115200
+*   **Endian:** Big-endian (addresses + words)
+*   **Timeout:** 5 seconds per operation
+*   **No unsolicited output allowed**
 
-```
-'w'
-[ADDR_H] [ADDR_L]
-[LEN_H]  [LEN_L]
-[DATA0_H] [DATA0_L]  ...
-```
+* * *
 
-### Fields
+Commands Overview
+-----------------
 
-| Field | Size | Description |
+| Command | Host → Dev | Description |
 | --- | --- | --- |
-| `'w'` | 1 byte | Write-block opcode |
-| Address | 2 bytes | Word address (big-endian) |
-| Length | 2 bytes | Number of **words** |
-| Data | 2 \* length bytes | Raw 16-bit words |
-
-Example: Writing 32 words starting at address `0x0200`:
-
-```
-77 02 00 00 20 [data...]
-```
-
-### Device → Host Response
-
-```
-'K'   # success
-```
-
-Any other response indicates failure.
+| `s` | handshake request | Initiate session |
+| `x` | disconnect | End session |
+| `w` | write block | Write flash/config words |
+| `r` | read block | Read N words |
+| `e` | erase row | Erase one flash row |
+| `b` | bulk erase | Erase all user flash |
 
 * * *
 
-4\. Read Block Command (`r`)
-============================
+Handshake
+---------
 
-### Host → Device Frame
-
-```
-'r'
-[ADDR_H] [ADDR_L]
-[LEN_H]  [LEN_L]
-```
-
-### Device → Host Response
-
-Returns `LEN * 2` bytes exactly:
+### Host → Arduino
 
 ```
-[DATA0_H] [DATA0_L] ...
+73   ; 's'
 ```
 
-If the Arduino returns fewer bytes or nothing, the read is treated as a failure.
+### Arduino → Host
+
+```
+4B   ; 'K'
+```
+
+Failure to receive `'K'` aborts the session.
 
 * * *
 
-5\. Disconnect (`x`)
-====================
+Write Block (`w`)
+=================
 
 ### Host → Device
 
 ```
-'x'
+'w'
+ADDR_H ADDR_L
+LEN_H LEN_L       ; number of 16-bit words
+<data bytes...>   ; 2 * LEN bytes
 ```
 
-Arduino should flush buffers and reset its internal state.
+### Device → Host
+
+```
+'K'
+```
 
 * * *
 
-6\. Memory Model
+Read Block (`r`)
 ================
 
-The PC side treats the PIC memory map as **word-addressed (16-bit)**.
-
-*   All addresses in the protocol represent **word offsets**, not byte offsets.
-*   Intel HEX records are divided by 2 during load (`address // 2`).
-*   High address records (type 4) are shifted accordingly.
-
-### Flash write sizes
-
-Determined by:
+### Host → Device
 
 ```
-FLASH_WRITE = <hex value>  # number of words
+'r'
+ADDR_H ADDR_L
+LEN_H LEN_L
 ```
 
-Chunks are padded with `0x3FFF`, matching erased PIC flash.
+### Device → Host
+
+```
+<data bytes...>   ; LEN * 2 bytes
+```
+
+Partial reads = failure.
 
 * * *
 
-7\. Timing Requirements (Firmware-Side)
-=======================================
+Erase Row (`e`)
+===============
 
-The host assumes:
+### Host → Device
 
-*   Device will respond within **5 seconds** to any command.
-*   Write-block commands may require flash erase/write cycles, but must still return within timeout.
-*   The Arduino firmware should **not** send unsolicited data.
+```
+'e'
+ADDR_H ADDR_L     ; word-aligned row address
+```
 
-* * *
+### Device → Host
 
-8\. Verification Logic
-======================
-
-After writing each block:
-
-1.  Host issues a read (`r`)
-2.  Compares byte-for-byte
-3.  Reports first mismatch position if any
-
-Config words are handled separately and may be outside flash write boundaries.
+```
+'K'
+```
 
 * * *
 
-9\. Dry-Run Behavior
+Bulk Erase (`b`)
+================
+
+### Host → Device
+
+```
+'b'
+ADDR_H ADDR_L     ; currently unused
+```
+
+Typically the address `0x80FF` is sent for compatibility.
+
+### Device → Host
+
+```
+'K'
+```
+
+* * *
+
+Disconnect (`x`)
+================
+
+Ends session and flushes buffers.
+
+* * *
+
+Memory Model
+============
+
+*   All addresses are **word addresses**
+*   All transfers are **16-bit words**
+*   Arduino returns words in **big-endian**
+*   Flash is chunked according to `FLASH_WRITE` rows
+*   Empty flash value is **0x3FFF**
+
+* * *
+
+Dump Filtering Logic
 ====================
 
-When `--dry-run` is used:
+When dumping (`--dump`):
 
-*   No serial port is opened.
-*   All reads return `0x3FFF` words.
-*   All writes succeed instantly.
-*   Output still shows block-by-block activity.
+*   All words equal to `0x3FFF` are removed
+*   Configuration-range addresses are always preserved
+*   Greatly reduces file size from full device dumps
+
+* * *
