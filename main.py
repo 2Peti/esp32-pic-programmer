@@ -153,17 +153,20 @@ class ArduinoProgrammer:
         self.baud = baud
         self.ser = None
 
-    def connect(self):
+    def connect(self, lvp=False):
+        command_byte = b'l' if lvp else b's'
+        mode_name = "LVP" if lvp else "HVP"
+
         if self.dry_run:
-            print(f"[DRY RUN] Pretending to connect to {self.port}...", end=' ')
+            print(f"[DRY RUN] Pretending to connect ({mode_name}) to {self.port}...", end=' ')
             print("Success.")
             return True
 
         try:
             self.ser = serial.Serial(self.port, self.baud, timeout=5)
-            print("Connecting...", end=' ', flush=True)
+            print(f"Connecting ({mode_name})...", end=' ', flush=True)
             time.sleep(2) 
-            self.ser.write(b's')
+            self.ser.write(command_byte)
             if self.ser.read() == b'K':
                 print("Success.")
                 return True
@@ -225,6 +228,7 @@ def main():
     parser.add_argument('hexfile', nargs='?', help='Input Intel HEX file for flashing or verifying.')
     parser.add_argument('-d', '--device', required=False, help='Path to pic_devices.ini (Required for Flash, Verify, and Full Dump).')
     parser.add_argument('-p', '--port', required=True, help='Serial Port.')
+    parser.add_argument('--lvp', action='store_true', help='Use Low-Voltage Programming (LVP) mode instead of High-Voltage Programming (HVP).')
     parser.add_argument('--dry-run', action='store_true', help='Simulate without hardware.')
     parser.add_argument('-c', '--config', action='store_true', help='Also include config words (applies to -f and -v).')
     parser.add_argument('-f', '--flash', action='store_true', help='Write hexfile to device flash memory.')
@@ -285,7 +289,7 @@ def main():
     print(f"Dry Run: {args.dry_run}")
 
     prog = ArduinoProgrammer(args.port, dry_run=args.dry_run)
-    if not prog.connect():
+    if not prog.connect(lvp=args.lvp):
         sys.exit(1)
 
     try:

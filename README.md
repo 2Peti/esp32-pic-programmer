@@ -17,6 +17,7 @@ Features
 *   Write bytes or words (`--write`)
 *   Read word blocks (`--read`)
 *   Dump entire flash + config to a HEX file (`--dump`)
+*   Support for both **High-Voltage (HVP)** and **Low-Voltage (LVP)** Programming modes (`--lvp`)
 *   Generate valid Intel HEX output
 *   Auto-detect device properties from `pic_devices.ini`
 *   Combine multiple actions in one command
@@ -60,6 +61,12 @@ Most common flashing workflow (wipe + flash + config):
 
 ```bash
 python3 main.py -d device.ini -p /dev/ttyUSB0 --wipe -f --config firmware.hex
+```
+Flashing using Low-Voltage Programming (LVP) mode:
+------------------------------------------------------
+
+```bash
+python3 main.py -d device.ini -p /dev/ttyUSB0 -f firmware.hex --lvp
 ```
 
 Flash only

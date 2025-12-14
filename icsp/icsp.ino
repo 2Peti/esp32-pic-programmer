@@ -1,6 +1,3 @@
-// FINAL Arduino HVP Programmer for PIC16F15344 - FIXED TIMING
-// Chip ID: 0x0003 2C40 (consistent reads)
-
 #define ICSP_PIN_DAT 17
 #define ICSP_PIN_CLK 18
 #define HV 19
@@ -15,6 +12,7 @@ static char cmd_args[4];
 static char cmd_data[128];
 
 static bool programming_mode = false;
+static char startup_seq[] = {'M', 'C', 'H', 'P'};
 
 void command(char cmd);
 void start_programming(void);
@@ -23,10 +21,6 @@ void read_words(void);
 void icsp_pins_out(void);
 void icsp_pins_low(void);
 
-// Helper Macros
-//#define shiftOutICSP(b) shiftOut(ICSP_PIN_DAT, ICSP_PIN_CLK, MSBFIRST, (b))
-//#define shiftOutICSP(b)   clockOut((b))
-//#define shiftInICSP()   shiftIn(ICSP_PIN_DAT, ICSP_PIN_CLK, MSBFIRST)
 #define CLK_HIGH()  digitalWrite(ICSP_PIN_CLK, HIGH); delayMicroseconds(ICSP_DELAY_CLK)
 #define CLK_LOW()   digitalWrite(ICSP_PIN_CLK, LOW); delayMicroseconds(ICSP_DELAY_CLK)
 #define CLK_CYCLE() CLK_HIGH(); CLK_LOW()
@@ -56,6 +50,10 @@ void command(char cmd) {
   switch (cmd) {
     case 's': // Start programming mode
       start_programming();
+    break;
+    
+    case 'l':
+      start_programming(true);
     break;
 
     case 'x': // Exit programming mode
@@ -87,17 +85,26 @@ void command(char cmd) {
 
 // Programmer commands
 
-void start_programming(void) {
+void start_programming(bool lvp = false) {
   
   // Set pins to outputs in a low state.
   icsp_pins_out();
   icsp_pins_low();
   delayMicroseconds(260);
-  digitalWrite(HV, LOW);
-  delayMicroseconds(260);
-  digitalWrite(VDD, HIGH);
-
-  delay(1);
+  
+  if (lvp) {
+    digitalWrite(HV, HIGH)
+    digitalWrite(VDD, HIGH)
+    delay(1);
+    for (int i=0; i < 4; i++) {
+      // Shift out the character MSb first
+      clockOut(startup_seq[i]);
+    }
+  } else {
+    digitalWrite(HV, LOW);
+    delayMicroseconds(260);
+    digitalWrite(VDD, HIGH);
+  }
 
   Serial.write('K');
 }
